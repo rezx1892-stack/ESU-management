@@ -676,7 +676,7 @@ export async function startBot(): Promise<void> {
         const active = await forum.threads.fetchActive();
         const allThreads = [...active.threads.values()];
         const processedMembers = new Set<string>();
-        const memberData: { name: string; quotaLines: string[] }[] = [];
+        const memberData: { userId: string; name: string; quotaLines: string[]; failed: boolean }[] = [];
 
         for (const thread of allThreads) {
           if (!thread.ownerId) continue;
@@ -702,6 +702,7 @@ export async function startBot(): Promise<void> {
           if (quotaIndex === -1) continue;
 
           const quotaLines: string[] = [];
+          let anyFailed = false;
 
           for (let i = quotaIndex + 1; i < lines.length; i++) {
             const line = lines[i].trim();
@@ -712,6 +713,7 @@ export async function startBot(): Promise<void> {
               const current = parseInt(ratioMatch[1], 10);
               const required = parseInt(ratioMatch[2], 10);
               const passed = current >= required;
+              if (!passed) anyFailed = true;
               quotaLines.push((passed ? "✅ " : "❌ ") + line);
             }
           }
@@ -719,8 +721,10 @@ export async function startBot(): Promise<void> {
           if (quotaLines.length === 0) continue;
 
           memberData.push({
+            userId: thread.ownerId,
             name: member.displayName,
             quotaLines,
+            failed: anyFailed,
           });
 
           processedMembers.add(thread.ownerId);
@@ -757,6 +761,17 @@ export async function startBot(): Promise<void> {
 
         for (let i = 1; i < embeds.length; i++) {
           await interaction.followUp({ embeds: [embeds[i]] });
+        }
+
+        const failedIds = memberData.filter((m) => m.failed).map((m) => m.userId);
+        if (failedIds.length > 0) {
+          const chunks: string[] = [];
+          for (let i = 0; i < failedIds.length; i += 50) {
+            chunks.push(failedIds.slice(i, i + 50).join(", "));
+          }
+          await interaction.followUp(
+            `❌ **Failed quota (${failedIds.length}):**\n${chunks.join("\n")}`,
+          );
         }
       } catch (error) {
         console.error(error);
@@ -1133,6 +1148,15 @@ export async function startBot(): Promise<void> {
             await interaction.followUp({ embeds: [embeds[i]!] });
           }
         }
+
+        const inactiveIds = inactive.map((e) => e.userId);
+        const chunks: string[] = [];
+        for (let i = 0; i < inactiveIds.length; i += 50) {
+          chunks.push(inactiveIds.slice(i, i + 50).join(", "));
+        }
+        await interaction.followUp(
+          `🔴 **Inactive member IDs (${inactiveIds.length}):**\n${chunks.join("\n")}`,
+        );
       } catch (err) {
         logger.error({ err }, "Error handling /inactivitycheck");
         await interaction
