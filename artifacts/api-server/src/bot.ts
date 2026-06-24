@@ -1,142 +1,154 @@
-import { 
-  Client, 
-  GatewayIntentBits, 
-  REST, 
-  Routes, 
-  SlashCommandBuilder, 
-  ChannelType, 
-  EmbedBuilder, 
+// @ts-nocheck
+import {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  ChannelType,
+  EmbedBuilder,
   TextChannel,
-  MessageFlags // Add this here
+  MessageFlags, // <--- Make sure this is inside the block!
 } from "discord.js";
+
+// Add your other imports below...
 import { google } from "googleapis";
 import { logger } from "./lib/logger.js";
 
-  // —— Google Sheets helpers
+// —— Google Sheets helpers
 
-  const SPREADSHEET_ID = "1M6_fe_OLvjk4OEdRBmz7rsNHAULHCgEDAA49MJM7IGM";
+const SPREADSHEET_ID = "1M6_fe_OLvjk4OEdRBmz7rsNHAULHCgEDAA49MJM7IGM";
 
-  function getSheetsClient() {
-    const raw = process.env["GOOGLE_SERVICE_ACCOUNT_JSON"];
-    if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON not set");
-    const creds = JSON.parse(raw) as {
-      client_email: string;
-      private_key: string;
-    };
-    const auth = new google.auth.GoogleAuth({
-      credentials: creds,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    return google.sheets({ version: "v4", auth });
+function getSheetsClient() {
+  const raw = process.env["GOOGLE_SERVICE_ACCOUNT_JSON"];
+  if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON not set");
+  const creds = JSON.parse(raw) as {
+    client_email: string;
+    private_key: string;
+  };
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  return google.sheets({ version: "v4", auth });
+}
+
+async function serveWarrantInSheet(
+  suspectName: string,
+): Promise<"served" | "not_found" | "already_served"> {
+  const sheets = getSheetsClient();
+
+  // 1. Fetch the entire data grid from the sheet
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "A1:Z1000",
+  });
+
+  const rows = res.data.values ?? [];
+  if (rows.length === 0) return "not_found";
+
+  let foundRowIndex = -1;
+  let foundColIndex = -1;
+
+  // 2. Scan every single cell in the sheet to find the suspect's name
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      if (
+        rows[r][c] &&
+        rows[r][c].toString().trim().toLowerCase() ===
+          suspectName.trim().toLowerCase()
+      ) {
+        foundRowIndex = r;
+        foundColIndex = c;
+        break;
+      }
+    }
+    if (foundRowIndex !== -1) break;
   }
 
-  async function serveWarrantInSheet(suspectName: string): Promise<"served" | "not_found" | "already_served"> {
-    const sheets = getSheetsClient();
+  // If the suspect name wasn't found anywhere in the sheet
+  if (foundRowIndex === -1) return "not_found";
 
-    // 1. Fetch the entire data grid from the sheet
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "A1:Z1000", 
-    });
+  // 3. The "Warrant Status" column is exactly 2 columns to the right of the Suspect name
+  const statusColIndex = foundColIndex + 2;
+  const currentStatus = rows[foundRowIndex][statusColIndex]
+    ? rows[foundRowIndex][statusColIndex].toString().trim().toLowerCase()
+    : "";
 
-    const rows = res.data.values ?? [];
-    if (rows.length === 0) return "not_found";
+  if (currentStatus === "served") {
+    return "already_served";
+  }
 
-    let foundRowIndex = -1;
-    let foundColIndex = -1;
-
-    // 2. Scan every single cell in the sheet to find the suspect's name
-    for (let r = 0; r < rows.length; r++) {
-      for (let c = 0; c < rows[r].length; c++) {
-        if (rows[r][c] && rows[r][c].toString().trim().toLowerCase() === suspectName.trim().toLowerCase()) {
-          foundRowIndex = r;
-          foundColIndex = c;
-          break;
-        }
-      }
-      if (foundRowIndex !== -1) break;
+  // 4. Convert the numerical column index back into a Google Sheets letter (e.g., Column B -> 'B')
+  function colToLetter(col: number): string {
+    let letter = "";
+    let c = col;
+    while (c >= 0) {
+      letter = String.fromCharCode((c % 26) + 65) + letter;
+      c = Math.floor(c / 26) - 1;
     }
+    return letter;
+  }
 
-    // If the suspect name wasn't found anywhere in the sheet
-    if (foundRowIndex === -1) return "not_found";
+  const targetCell = `${colToLetter(statusColIndex)}${foundRowIndex + 1}`; // +1 because sheets are 1-indexed
 
-    // 3. The "Warrant Status" column is exactly 2 columns to the right of the Suspect name
-    const statusColIndex = foundColIndex + 2; 
-    const currentStatus = rows[foundRowIndex][statusColIndex] ? rows[foundRowIndex][statusColIndex].toString().trim().toLowerCase() : "";
+  // 5. Update that specific cell to "Served"
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: targetCell,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [["Served"]],
+    },
+  });
 
-    if (currentStatus === "served") {
-      return "already_served";
-    }
+  // 6. Fetch spreadsheet metadata to get the proper sheet ID
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const sheetId = meta.data.sheets?.[0]?.properties?.sheetId ?? 0;
 
-
-
-    // 4. Convert the numerical column index back into a Google Sheets letter (e.g., Column B -> 'B')
-    function colToLetter(col: number): string {
-      let letter = "";
-      let c = col;
-      while (c >= 0) {
-        letter = String.fromCharCode((c % 26) + 65) + letter;
-        c = Math.floor(c / 26) - 1;
-      }
-      return letter;
-    }
-
-    const targetCell = `${colToLetter(statusColIndex)}${foundRowIndex + 1}`; // +1 because sheets are 1-indexed
-
-    // 5. Update that specific cell to "Served"
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: targetCell,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [["Served"]],
-      },
-    });
-
-    // 6. Fetch spreadsheet metadata to get the proper sheet ID
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-    const sheetId = meta.data.sheets?.[0]?.properties?.sheetId ?? 0;
-
-    // 7. Paint the cell bright red with white bold text
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: foundRowIndex,
-                endRowIndex: foundRowIndex + 1,
-                startColumnIndex: statusColIndex,
-                endColumnIndex: statusColIndex + 1,
-              },
-              cell: {
-                userEnteredFormat: {
-                  backgroundColor: { red: 1, green: 0, blue: 0 },
-                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+  // 7. Paint the cell bright red with white bold text
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: {
+              sheetId,
+              startRowIndex: foundRowIndex,
+              endRowIndex: foundRowIndex + 1,
+              startColumnIndex: statusColIndex,
+              endColumnIndex: statusColIndex + 1,
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: { red: 1, green: 0, blue: 0 },
+                textFormat: {
+                  bold: true,
+                  foregroundColor: { red: 1, green: 1, blue: 1 },
                 },
               },
-              fields: "userEnteredFormat(backgroundColor,textFormat)",
             },
+            fields: "userEnteredFormat(backgroundColor,textFormat)",
           },
-        ],
-      },
-    });
+        },
+      ],
+    },
+  });
 
-    return "served";
-  }
+  return "served";
+}
 
-  interface GuildConfig {
-    patrolLogsChannelId: string;
-    requiredRoleId: string;
-    excusedRoleId: string;
-    allowedCommandRoles: Set<string>;
-    rankLockChannelId: string;
-    rankLockRoleId: string;
-    inactivityCheckRoles: Set<string>;
-    warrantLogChannelId?: string;
-  }
+interface GuildConfig {
+  patrolLogsChannelId: string;
+  requiredRoleId: string;
+  excusedRoleId: string;
+  allowedCommandRoles: Set<string>;
+  rankLockChannelId: string;
+  rankLockRoleId: string;
+  inactivityCheckRoles: Set<string>;
+  warrantLogChannelId?: string;
+}
 interface ActiveLOA {
   userId: string;
   guildId: string;
@@ -147,7 +159,7 @@ let activeLOAs: ActiveLOA[] = [];
 
 const LOA_ROLE_ID = "1483541152983683102";
 const COMMAND_REQUIRED_ROLE_ID = "1318013406501933077";
-  const GUILD_CONFIGS: Record<string, GuildConfig> = {
+const GUILD_CONFIGS: Record<string, GuildConfig> = {
   // Original server
   "1317964647680311427": {
     patrolLogsChannelId: "1481434783220240384",
@@ -181,10 +193,10 @@ const COMMAND_REQUIRED_ROLE_ID = "1318013406501933077";
 // ─── Duration parsing ───────────────────────────────────────────────────────
 
 const DURATION_PATTERNS: { regex: RegExp; ms: (n: number) => number }[] = [
-  { regex: /(\d+)\s*month[s]?/i,  ms: (n) => n * 30 * 24 * 60 * 60 * 1000 },
-  { regex: /(\d+)\s*week[s]?/i,   ms: (n) => n * 7  * 24 * 60 * 60 * 1000 },
-  { regex: /(\d+)\s*day[s]?/i,    ms: (n) => n * 24 * 60 * 60 * 1000 },
-  { regex: /(\d+)\s*hour[s]?/i,   ms: (n) => n * 60 * 60 * 1000 },
+  { regex: /(\d+)\s*month[s]?/i, ms: (n) => n * 30 * 24 * 60 * 60 * 1000 },
+  { regex: /(\d+)\s*week[s]?/i, ms: (n) => n * 7 * 24 * 60 * 60 * 1000 },
+  { regex: /(\d+)\s*day[s]?/i, ms: (n) => n * 24 * 60 * 60 * 1000 },
+  { regex: /(\d+)\s*hour[s]?/i, ms: (n) => n * 60 * 60 * 1000 },
 ];
 
 function parseDurationMs(text: string): number | "permanent" | null {
@@ -225,7 +237,8 @@ function formatDuration(ms: number): string {
 
   const parts: string[] = [];
   if (days > 0) parts.push(`${days} day${days !== 1 ? "s" : ""}`);
-  if (hours > 0 && days < 7) parts.push(`${hours} hour${hours !== 1 ? "s" : ""}`);
+  if (hours > 0 && days < 7)
+    parts.push(`${hours} hour${hours !== 1 ? "s" : ""}`);
 
   return parts.join(" ") || "< 1 hour";
 }
@@ -325,27 +338,39 @@ export async function startBot(): Promise<void> {
   const commands = [
     new SlashCommandBuilder()
       .setName("checkquota")
-      .setDescription("Scan patrol-logs and display quota status for all members"),
+      .setDescription(
+        "Scan patrol-logs and display quota status for all members",
+      ),
     new SlashCommandBuilder()
       .setName("ranklock")
       .setDescription("Check how much time is left on a rank lock")
       .addUserOption((opt) =>
         opt
           .setName("user")
-          .setDescription("The member to check (HR only — defaults to yourself)")
+          .setDescription(
+            "The member to check (HR only — defaults to yourself)",
+          )
           .setRequired(false),
       ),
     new SlashCommandBuilder()
       .setName("inactivitycheck")
-      .setDescription("List members who have not increased their patrol log count in the last 7 days"),
+      .setDescription(
+        "List members who have not increased their patrol log count in the last 7 days",
+      ),
     new SlashCommandBuilder()
       .setName("loa")
       .setDescription("Approve an LOA for a user")
-      .addUserOption(opt => 
-        opt.setName("user").setDescription("The user going on LOA").setRequired(true)
+      .addUserOption((opt) =>
+        opt
+          .setName("user")
+          .setDescription("The user going on LOA")
+          .setRequired(true),
       )
-      .addIntegerOption(opt => 
-        opt.setName("days").setDescription("Number of days for the LOA").setRequired(true)
+      .addIntegerOption((opt) =>
+        opt
+          .setName("days")
+          .setDescription("Number of days for the LOA")
+          .setRequired(true),
       ),
     new SlashCommandBuilder()
       .setName("loas")
@@ -353,12 +378,17 @@ export async function startBot(): Promise<void> {
     new SlashCommandBuilder()
       .setName("removeloa")
       .setDescription("Forcefully cancel and remove an LOA from a user")
-      .addUserOption(opt => 
-        opt.setName("user").setDescription("The user to remove from LOA").setRequired(true)
+      .addUserOption((opt) =>
+        opt
+          .setName("user")
+          .setDescription("The user to remove from LOA")
+          .setRequired(true),
       ),
     new SlashCommandBuilder()
-    .setName("activewarrants")
-    .setDescription("Displays a list of all active unserved warrants from the database")
+      .setName("activewarrants")
+      .setDescription(
+        "Displays a list of all active unserved warrants from the database",
+      ),
   ];
 
   client.once("ready", async (c) => {
@@ -370,10 +400,9 @@ export async function startBot(): Promise<void> {
 
     for (const guildId of guilds) {
       try {
-        await rest.put(
-          Routes.applicationGuildCommands(c.user.id, guildId),
-          { body: commands.map((cmd) => cmd.toJSON()) },
-        );
+        await rest.put(Routes.applicationGuildCommands(c.user.id, guildId), {
+          body: commands.map((cmd) => cmd.toJSON()),
+        });
         logger.info({ guildId }, "Registered slash commands");
       } catch (err) {
         logger.error({ err, guildId }, "Failed to register slash commands");
@@ -384,8 +413,8 @@ export async function startBot(): Promise<void> {
   // Background checker to automatically clear expired LOAs and ping the user
   setInterval(async () => {
     const now = Date.now();
-    const expired = activeLOAs.filter(loa => now >= loa.endsAt);
-    activeLOAs = activeLOAs.filter(loa => now < loa.endsAt);
+    const expired = activeLOAs.filter((loa) => now >= loa.endsAt);
+    activeLOAs = activeLOAs.filter((loa) => now < loa.endsAt);
 
     for (const loa of expired) {
       try {
@@ -395,22 +424,29 @@ export async function startBot(): Promise<void> {
         // 1. Strip the LOA role if they have it
         if (member && member.roles.cache.has(LOA_ROLE_ID)) {
           await member.roles.remove(LOA_ROLE_ID);
-          console.log(`[LOA EXPIRED]: Automatically removed LOA role from user ID: ${loa.userId}`);
+          console.log(
+            `[LOA EXPIRED]: Automatically removed LOA role from user ID: ${loa.userId}`,
+          );
         }
 
         // 2. Fetch the server config and ping the user in your patrol logs channel
         const config = GUILD_CONFIGS[loa.guildId];
         if (config && config.patrolLogsChannelId) {
-          const channel = await guild.channels.fetch(config.patrolLogsChannelId);
+          const channel = await guild.channels.fetch(
+            config.patrolLogsChannelId,
+          );
 
           if (channel && channel.isTextBased()) {
             await channel.send({
-              content: `📢 <@${loa.userId}>, your Leave of Absence (LOA) has officially expired. Welcome back to active duty!`
+              content: `📢 <@${loa.userId}>, your Leave of Absence (LOA) has officially expired. Welcome back to active duty!`,
             });
           }
         }
       } catch (err) {
-        console.error(`Failed to automatically process expired LOA for user ${loa.userId}:`, err);
+        console.error(
+          `Failed to automatically process expired LOA for user ${loa.userId}:`,
+          err,
+        );
       }
     }
   }, 60000);
@@ -419,7 +455,9 @@ export async function startBot(): Promise<void> {
   client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    const config = interaction.guildId ? GUILD_CONFIGS[interaction.guildId] : undefined;
+    const config = interaction.guildId
+      ? GUILD_CONFIGS[interaction.guildId]
+      : undefined;
     if (!config) {
       await interaction.reply({
         content: "❌ This server is not configured for this bot.",
@@ -436,40 +474,60 @@ export async function startBot(): Promise<void> {
     // --- /loa Command ---
     if (interaction.commandName === "loa") {
       if (!interaction.member.roles.cache.has(COMMAND_REQUIRED_ROLE_ID)) {
-        return interaction.reply({ content: "❌ You do not have permission to use this command.", ephemeral: true });
+        return interaction.reply({
+          content: "❌ You do not have permission to use this command.",
+          ephemeral: true,
+        });
       }
 
       const targetUser = interaction.options.getUser("user");
       const days = interaction.options.getInteger("days");
 
-      if (!targetUser || !days) return interaction.reply({ content: "❌ Missing required options.", ephemeral: true });
+      if (!targetUser || !days)
+        return interaction.reply({
+          content: "❌ Missing required options.",
+          ephemeral: true,
+        });
 
       const member = await interaction.guild?.members.fetch(targetUser.id);
-      if (!member) return interaction.reply({ content: "❌ User not found in this server.", ephemeral: true });
+      if (!member)
+        return interaction.reply({
+          content: "❌ User not found in this server.",
+          ephemeral: true,
+        });
 
       const durationMs = days * 24 * 60 * 60 * 1000;
       const endsAt = Date.now() + durationMs;
 
-      activeLOAs = activeLOAs.filter(loa => loa.userId !== targetUser.id);
-      activeLOAs.push({ userId: targetUser.id, guildId: interaction.guildId!, endsAt });
+      activeLOAs = activeLOAs.filter((loa) => loa.userId !== targetUser.id);
+      activeLOAs.push({
+        userId: targetUser.id,
+        guildId: interaction.guildId!,
+        endsAt,
+      });
 
       await member.roles.add(LOA_ROLE_ID);
       const timestampString = Math.floor(endsAt / 1000);
 
       return interaction.reply({
-        content: `✅ **LOA Approved**\n**User:** <@${targetUser.id}>\n**Duration:** ${days} days\n**Expires:** <t:${timestampString}:D> (<t:${timestampString}:R>)`
+        content: `✅ **LOA Approved**\n**User:** <@${targetUser.id}>\n**Duration:** ${days} days\n**Expires:** <t:${timestampString}:D> (<t:${timestampString}:R>)`,
       });
     }
 
     // --- /loas List Command ---
     if (interaction.commandName === "loas") {
-      const currentGuildLOAs = activeLOAs.filter(loa => loa.guildId === interaction.guildId);
+      const currentGuildLOAs = activeLOAs.filter(
+        (loa) => loa.guildId === interaction.guildId,
+      );
       if (currentGuildLOAs.length === 0) {
-        return interaction.reply({ content: "ℹ️ There are currently no active LOAs.", ephemeral: true });
+        return interaction.reply({
+          content: "ℹ️ There are currently no active LOAs.",
+          ephemeral: true,
+        });
       }
 
       let responseMessage = "📋 **Active Leave of Absences (LOAs):**\n\n";
-      currentGuildLOAs.forEach(loa => {
+      currentGuildLOAs.forEach((loa) => {
         const relativeTimestamp = Math.floor(loa.endsAt / 1000);
         responseMessage += `• <@${loa.userId}> — Time remaining: <t:${relativeTimestamp}:R> (Ends: <t:${relativeTimestamp}:D>)\n`;
       });
@@ -480,110 +538,246 @@ export async function startBot(): Promise<void> {
     // --- /removeloa Command ---
     if (interaction.commandName === "removeloa") {
       if (!interaction.member.roles.cache.has(COMMAND_REQUIRED_ROLE_ID)) {
-        return interaction.reply({ content: "❌ You do not have permission to use this command.", ephemeral: true });
+        return interaction.reply({
+          content: "❌ You do not have permission to use this command.",
+          ephemeral: true,
+        });
       }
 
       const targetUser = interaction.options.getUser("user");
-      if (!targetUser) return interaction.reply({ content: "❌ Please specify a user.", ephemeral: true });
+      if (!targetUser)
+        return interaction.reply({
+          content: "❌ Please specify a user.",
+          ephemeral: true,
+        });
 
       const member = await interaction.guild?.members.fetch(targetUser.id);
 
       const initialLength = activeLOAs.length;
-      activeLOAs = activeLOAs.filter(loa => loa.userId !== targetUser.id);
+      activeLOAs = activeLOAs.filter((loa) => loa.userId !== targetUser.id);
 
       if (member && member.roles.cache.has(LOA_ROLE_ID)) {
         await member.roles.remove(LOA_ROLE_ID);
       }
 
-      if (initialLength === activeLOAs.length && (!member || !member.roles.cache.has(LOA_ROLE_ID))) {
-        return interaction.reply({ content: `ℹ️ <@${targetUser.id}> does not have an active LOA logged.`, ephemeral: true });
+      if (
+        initialLength === activeLOAs.length &&
+        (!member || !member.roles.cache.has(LOA_ROLE_ID))
+      ) {
+        return interaction.reply({
+          content: `ℹ️ <@${targetUser.id}> does not have an active LOA logged.`,
+          ephemeral: true,
+        });
       }
 
-      return interaction.reply({ content: `🛑 **Force Removed LOA:** <@${targetUser.id}>'s LOA status has been terminated and their role has been removed.` });
+      return interaction.reply({
+        content: `🛑 **Force Removed LOA:** <@${targetUser.id}>'s LOA status has been terminated and their role has been removed.`,
+      });
     }
-                                    // --- /activewarrants Command ---
-                                    if (interaction.commandName === "activewarrants") {
-                                      const REQUIRED_ROLE_ID = "1481057691400015973";
+    // --- /activewarrants Command ---
+    if (interaction.commandName === "activewarrants") {
+      const ALLOWED_ROLE_IDS = [
+        "1481057746416828639",
+        "1481104542299848955",
+        "1481405456722432142",
+        "1481057983621501059",
+        "1318006222867267634",
+        "1317965217262600242",
+      ];
 
-                                      if (!interaction.member || !(interaction.member.roles as any).cache.has(REQUIRED_ROLE_ID)) {
-                                        return interaction.reply({ content: "❌ No permission.", ephemeral: true });
-                                      }
+      const memberRoles = (interaction.member as any).roles.cache;
 
-                                      await interaction.deferReply({ ephemeral: false });
+      // DEBUG: This prints the truth to your terminal
+      console.log(
+        "DEBUG: Your User Role IDs:",
+        memberRoles.map((r: any) => r.id),
+      );
 
-                                      try {
-                                        const sheets = getSheetsClient();
+      const hasPermission = memberRoles.some((role: any) =>
+        ALLOWED_ROLE_IDS.includes(role.id),
+      );
 
-                                        // Fetching from your range
-                                        const response = await sheets.spreadsheets.values.get({
-                                          spreadsheetId: SPREADSHEET_ID,
-                                          range: "Warrants!A1:K100", 
-                                        });
+      if (!interaction.member || !hasPermission) {
+        return interaction.reply({
+          content: "❌ No permission.",
+          flags: [4],
+        });
+      }
 
-                                        const rows = response.data.values;
+      await interaction.deferReply({ ephemeral: false });
 
-                                        if (!rows || rows.length === 0) {
-                                          return interaction.editReply({ content: "ℹ️ No data found in the spreadsheet." });
-                                        }
+      try {
+        const sheets = getSheetsClient();
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId: SPREADSHEET_ID,
+          range: "Warrants!A1:K100",
+        });
 
-                                        let results: string[] = [];
+        const rows = response.data.values;
+        if (!rows || rows.length === 0) {
+          return interaction.editReply({
+            content: "ℹ️ No data found in the spreadsheet.",
+          });
+        }
 
-                                        // Parse the data starting from row 18 (index 17)
-                                        for (let i = 17; i < rows.length; i++) {
-                                          const row = rows[i];
-                                          const name = row[1];   // Column B
-                                          const status = row[3]; // Column D
+        let results: string[] = [];
+        for (let i = 17; i < rows.length; i++) {
+          const row = rows[i];
+          const name = row[1];
+          const status = row[3];
 
-                                          if (name && status && String(status).trim().toLowerCase() === "active") {
-                                            const cleanName = String(name).trim();
-                                            const profileLink = `https://www.roblox.com/users/profile?username=${encodeURIComponent(cleanName)}`;
-                                            results.push(`[${cleanName}](${profileLink})`);
-                                          }
-                                        }
+          if (
+            name &&
+            status &&
+            String(status).trim().toLowerCase() === "active"
+          ) {
+            const cleanName = String(name).trim();
+            const profileLink = `https://www.roblox.com/users/profile?username=${encodeURIComponent(cleanName)}`;
+            results.push(`[${cleanName}](${profileLink})`);
+          }
+        }
 
-                                        if (results.length === 0) {
-                                          return interaction.editReply({ content: "ℹ️ No active warrants found." });
-                                        }
+        if (results.length === 0) {
+          return interaction.editReply({
+            content: "ℹ️ No active warrants found.",
+          });
+        }
 
-                                        // Format the final message
-                                        const message = `📜 **Active Warrants:**\n${results.map((entry, i) => `**${i + 1}.** ${entry}`).join('\n')}`;
-                                        return interaction.editReply({ content: message });
-
-                                      } catch (err) {
-                                        console.error("Bot failed:", err);
-                                        return interaction.editReply({ content: "❌ Error connecting to database." });
-                                      }
-                                    }
-
-// --- /checkquota Command ---
-else if (interaction.commandName === "checkquota") {
-  try {
-    await interaction.deferReply().catch(() => {});
-    const results: any[] = [];
-    // ... [Insert your original quota-checking logic here, starting from where you get threadMembers]
-    // Make sure the entire "for" loop and embed logic is inside these braces!
-
-    // (Ensure the code below is included inside this else if block)
-    if (results.length === 0) {
-      await interaction.editReply("No quota data found.");
-      return;
+        const message = `📜 **Active Warrants:**\n${results.map((entry, i) => `**${i + 1}.** ${entry}`).join("\n")}`;
+        return interaction.editReply({ content: message });
+      } catch (err) {
+        console.error("Bot failed:", err);
+        return interaction.editReply({
+          content: "❌ Error connecting to database.",
+        });
+      }
     }
-    // ... [Rest of your quota code]
 
-  } catch (err) {
-    logger.error({ err }, "Error handling /checkquota");
-    await interaction.editReply("❌ An error occurred.").catch(() => undefined);
-  }
-}
+    // Check Quota Command
+    if (interaction.commandName === "checkquota") {
+      await interaction.deferReply();
+
+      const PERMISSION_ROLE_ID = "1317965217262600242";
+      const CHANNEL_ID = "1481434783220240384";
+      const TARGET_ROLE_ID = "1481057691400015973";
+      const LOA_ROLE_ID = "1483541152983683102";
+
+      if (!interaction.member.roles.cache.has(PERMISSION_ROLE_ID)) {
+        return interaction.editReply("❌ No permission.");
+      }
+
+      try {
+        const forum = await interaction.guild.channels.fetch(CHANNEL_ID);
+
+        if (!forum || forum.type !== ChannelType.GuildForum) {
+          return interaction.editReply("❌ Forum channel not found.");
+        }
+
+        const active = await forum.threads.fetchActive();
+        const allThreads = [...active.threads.values()];
+        const processedMembers = new Set<string>();
+        const memberData: { name: string; quotaLines: string[] }[] = [];
+
+        for (const thread of allThreads) {
+          if (!thread.ownerId) continue;
+          if (processedMembers.has(thread.ownerId)) continue;
+
+          const member = await interaction.guild.members.fetch(thread.ownerId).catch(() => null);
+          if (!member || !member.roles.cache.has(TARGET_ROLE_ID) || member.roles.cache.has(LOA_ROLE_ID)) continue;
+
+          const messages = await thread.messages.fetch({ limit: 100 });
+          const ownerMessage = [...messages.values()]
+            .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+            .find((msg) => msg.author.id === thread.ownerId && /quota/i.test(msg.content));
+
+          if (!ownerMessage) continue;
+
+          if (!ownerMessage.content.includes("✅ Quota checked")) {
+            await ownerMessage.reply("✅ Quota checked").catch(() => {});
+          }
+
+          const lines = ownerMessage.content.split("\n");
+          const quotaIndex = lines.findIndex((line) => /quota/i.test(line));
+
+          if (quotaIndex === -1) continue;
+
+          const quotaLines: string[] = [];
+
+          for (let i = quotaIndex + 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+
+            const ratioMatch = line.match(/(\d+)\s*\/\s*(\d+)/);
+            if (ratioMatch) {
+              const current = parseInt(ratioMatch[1], 10);
+              const required = parseInt(ratioMatch[2], 10);
+              const passed = current >= required;
+              quotaLines.push((passed ? "✅ " : "❌ ") + line);
+            }
+          }
+
+          if (quotaLines.length === 0) continue;
+
+          memberData.push({
+            name: member.displayName,
+            quotaLines,
+          });
+
+          processedMembers.add(thread.ownerId);
+        }
+
+        if (memberData.length === 0) {
+          return interaction.editReply("❌ No valid quota entries found.");
+        }
+
+        const embeds: EmbedBuilder[] = [];
+        const MEMBERS_PER_PAGE = 20;
+
+        for (let i = 0; i < memberData.length; i += MEMBERS_PER_PAGE) {
+          const chunk = memberData.slice(i, i + MEMBERS_PER_PAGE);
+
+          const embed = new EmbedBuilder()
+            .setTitle("📋 ESU Quota Report")
+            .setColor(0x57f287)
+            .setTimestamp()
+            .setFooter({ text: `${memberData.length} member(s) scanned` });
+
+          for (const member of chunk) {
+            embed.addFields({
+              name: member.name,
+              value: member.quotaLines.join("\n"),
+              inline: false,
+            });
+          }
+
+          embeds.push(embed);
+        }
+
+        await interaction.editReply({ embeds: [embeds[0]] });
+
+        for (let i = 1; i < embeds.length; i++) {
+          await interaction.followUp({ embeds: [embeds[i]] });
+        }
+      } catch (error) {
+        console.error(error);
+        return interaction.editReply("❌ Error scanning patrol logs.");
+      }
+    }
+
+        
 
     // ── /ranklock ────────────────────────────────────────────────────────
 
     if (interaction.commandName === "ranklock") {
       const member =
         interaction.guild?.members.cache.get(interaction.user.id) ??
-        (await interaction.guild?.members.fetch(interaction.user.id).catch(() => null));
+        (await interaction.guild?.members
+          .fetch(interaction.user.id)
+          .catch(() => null));
 
-      const isHR = member?.roles.cache.some((r) => config.allowedCommandRoles.has(r.id));
+      const isHR = member?.roles.cache.some((r) =>
+        config.allowedCommandRoles.has(r.id),
+      );
       const hasRankLockRole = member?.roles.cache.has(config.rankLockRoleId);
 
       if (!isHR && !hasRankLockRole) {
@@ -635,8 +829,10 @@ else if (interaction.commandName === "checkquota") {
             // Only match messages with a "User(name): @mention" field line
             const hasUserField = msg.content
               .split("\n")
-              .some((line) =>
-                /^user(?:name)?\s*:/i.test(line.trim()) && line.includes(mention),
+              .some(
+                (line) =>
+                  /^user(?:name)?\s*:/i.test(line.trim()) &&
+                  line.includes(mention),
               );
             if (hasUserField) {
               foundMessage = msg;
@@ -649,9 +845,10 @@ else if (interaction.commandName === "checkquota") {
           if (messages.size < 100) break;
         }
 
-        const targetName = targetUser.id === interaction.user.id
-          ? "you"
-          : `**${targetUser.displayName ?? targetUser.username}**`;
+        const targetName =
+          targetUser.id === interaction.user.id
+            ? "you"
+            : `**${targetUser.displayName ?? targetUser.username}**`;
 
         if (!foundMessage) {
           await interaction.editReply(
@@ -665,15 +862,16 @@ else if (interaction.commandName === "checkquota") {
         if (duration === null) {
           await interaction.editReply(
             `❌ Found a message mentioning ${targetName}, but couldn't parse a duration from it.\n` +
-            `> ${foundMessage.content.slice(0, 200)}`,
+              `> ${foundMessage.content.slice(0, 200)}`,
           );
           return;
         }
 
         const sentTs = foundMessage.createdTimestamp;
-        const embedTitle = targetUser.id === interaction.user.id
-          ? "🔒 Your Rank Lock Status"
-          : `🔒 Rank Lock Status — ${targetUser.displayName ?? targetUser.username}`;
+        const embedTitle =
+          targetUser.id === interaction.user.id
+            ? "🔒 Your Rank Lock Status"
+            : `🔒 Rank Lock Status — ${targetUser.displayName ?? targetUser.username}`;
 
         if (duration === "permanent") {
           const embed = new EmbedBuilder()
@@ -681,7 +879,7 @@ else if (interaction.commandName === "checkquota") {
             .setColor(0xed4245)
             .setDescription(
               `Rank lock is **permanent / indefinite**.\n\n` +
-              `> ${foundMessage.content.slice(0, 300)}`,
+                `> ${foundMessage.content.slice(0, 300)}`,
             )
             .addFields({
               name: "Lock issued",
@@ -719,7 +917,10 @@ else if (interaction.commandName === "checkquota") {
             },
             {
               name: remainingMs > 0 ? "⏳ Time remaining" : "✅ Status",
-              value: remainingMs > 0 ? formatRemaining(remainingMs) : "Rank lock period has passed",
+              value:
+                remainingMs > 0
+                  ? formatRemaining(remainingMs)
+                  : "Rank lock period has passed",
               inline: false,
             },
           )
@@ -741,7 +942,9 @@ else if (interaction.commandName === "checkquota") {
     if (interaction.commandName === "inactivitycheck") {
       const member =
         interaction.guild?.members.cache.get(interaction.user.id) ??
-        (await interaction.guild?.members.fetch(interaction.user.id).catch(() => null));
+        (await interaction.guild?.members
+          .fetch(interaction.user.id)
+          .catch(() => null));
 
       const hasPermission = member?.roles.cache.some((r) =>
         config.inactivityCheckRoles.has(r.id),
@@ -769,7 +972,9 @@ else if (interaction.commandName === "checkquota") {
           return;
         }
 
-        await interaction.editReply("⏳ Scanning patrol logs for inactivity… this may take a moment.");
+        await interaction.editReply(
+          "⏳ Scanning patrol logs for inactivity… this may take a moment.",
+        );
 
         const [active, archived] = await Promise.all([
           channel.threads.fetchActive(),
@@ -878,7 +1083,11 @@ else if (interaction.commandName === "checkquota") {
         const FIELDS_PER_EMBED = 25;
         const embeds: EmbedBuilder[] = [];
 
-        for (let page = 0; page < Math.ceil(inactive.length / FIELDS_PER_EMBED); page++) {
+        for (
+          let page = 0;
+          page < Math.ceil(inactive.length / FIELDS_PER_EMBED);
+          page++
+        ) {
           const slice = inactive.slice(
             page * FIELDS_PER_EMBED,
             (page + 1) * FIELDS_PER_EMBED,
@@ -952,7 +1161,9 @@ else if (interaction.commandName === "checkquota") {
     // Parse suspect name
     const suspectMatch = content.match(/^suspect\s*:\s*(.+)$/im);
     if (!suspectMatch?.[1]) {
-      await message.reply("⚠️ Could not parse the **Suspect** field from this message.").catch(() => undefined);
+      await message
+        .reply("⚠️ Could not parse the **Suspect** field from this message.")
+        .catch(() => undefined);
       return;
     }
 
@@ -962,25 +1173,33 @@ else if (interaction.commandName === "checkquota") {
       const result = await serveWarrantInSheet(suspectName);
 
       if (result === "served") {
-        await message.reply(
-          `✅ Warrant for **${suspectName}** has been marked as **Served** in the spreadsheet (cell highlighted red).`,
-        ).catch(() => undefined);
+        await message
+          .reply(
+            `✅ Warrant for **${suspectName}** has been marked as **Served** in the spreadsheet (cell highlighted red).`,
+          )
+          .catch(() => undefined);
         logger.info({ suspectName }, "Warrant marked as served in sheet");
       } else if (result === "already_served") {
-        await message.reply(
-          `ℹ️ Warrant for **${suspectName}** is already marked as Served in the spreadsheet.`,
-        ).catch(() => undefined);
+        await message
+          .reply(
+            `ℹ️ Warrant for **${suspectName}** is already marked as Served in the spreadsheet.`,
+          )
+          .catch(() => undefined);
       } else {
-        await message.reply(
-          `⚠️ Could not find **${suspectName}** in the warrants spreadsheet. Please check the spelling matches exactly.`,
-        ).catch(() => undefined);
+        await message
+          .reply(
+            `⚠️ Could not find **${suspectName}** in the warrants spreadsheet. Please check the spelling matches exactly.`,
+          )
+          .catch(() => undefined);
         logger.warn({ suspectName }, "Suspect not found in sheet");
       }
     } catch (err) {
       logger.error({ err, suspectName }, "Error updating warrant in sheet");
-      await message.reply(
-        "❌ An error occurred while updating the spreadsheet. Please check the bot logs.",
-      ).catch(() => undefined);
+      await message
+        .reply(
+          "❌ An error occurred while updating the spreadsheet. Please check the bot logs.",
+        )
+        .catch(() => undefined);
     }
   });
 
