@@ -1227,5 +1227,12 @@ export async function startBot(): Promise<void> {
     }
   });
 
-  await client.login(token);
+  logger.info({ tokenLength: token.length, tokenPrefix: token.slice(0, 10) }, "Attempting Discord login");
+
+  await Promise.race([
+    client.login(token),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Discord login timed out after 15s — token is likely invalid or revoked")), 15000)
+    ),
+  ]);
 }
