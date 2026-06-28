@@ -25,7 +25,28 @@ app.listen(port, (err) => {
   logger.info({ port }, "Server listening");
 });
 
-// Start Discord bot
-startBot().catch((err) => {
-  logger.error({ err }, "Discord bot crashed");
-});
+// Start Discord bot with exponential-backoff retry so a temporary
+// Cloudflare / gateway rate-limit doesn't leave the bot offline forever.
+(async () => {
+  const MAX_RETRIES = 20;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await startBot();
+      return; // connected — done
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTimeout = msg === "login_timeout";
+      const backoffMs = Math.min(30_000, 5_000 * Math.pow(1.5, attempt - 1));
+      if (isTimeout) {
+        logger.warn({ attempt, backoffMs }, "Discord login timed out (rate-limited?) — retrying after backoff");
+      } else {
+        logger.error({ err, attempt, backoffMs }, "Discord bot crashed — retrying after backoff");
+      }
+      if (attempt === MAX_RETRIES) {
+        logger.error("Discord bot failed to connect after maximum retries — giving up");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
+  }
+})();

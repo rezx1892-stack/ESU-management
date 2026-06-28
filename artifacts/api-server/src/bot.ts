@@ -321,7 +321,7 @@ async function findQuotaForThread(
 // ─── Bot startup ────────────────────────────────────────────────────────────
 
 export async function startBot(): Promise<void> {
-  const token = process.env["DISCORD_TOKEN"];
+  const token = (process.env["DISCORD_TOKEN"] ?? "").trim();
   if (!token) {
     logger.error("DISCORD_TOKEN not set — bot will not start");
     return;
@@ -1227,12 +1227,12 @@ export async function startBot(): Promise<void> {
     }
   });
 
-  logger.info({ tokenLength: token.length, tokenPrefix: token.slice(0, 10) }, "Attempting Discord login");
+  logger.info({ tokenLength: token.length }, "Attempting Discord login");
 
   await Promise.race([
     client.login(token),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Discord login timed out after 15s — token is likely invalid or revoked")), 15000)
+      setTimeout(() => reject(new Error("login_timeout")), 20_000),
     ),
   ]);
 }
