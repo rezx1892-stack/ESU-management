@@ -1017,7 +1017,13 @@ export async function startBot(): Promise<void> {
           if (processedMembers.has(thread.ownerId)) continue;
 
           const member = await interaction.guild.members.fetch(thread.ownerId).catch(() => null);
-          if (!member || !member.roles.cache.has(TARGET_ROLE_ID) || member.roles.cache.has(LOA_ROLE_ID)) continue;
+          if (
+            !member ||
+            !member.roles.cache.has(TARGET_ROLE_ID) ||
+            member.roles.cache.has(LOA_ROLE_ID) ||
+            member.roles.cache.has("1481405456722432142")
+          )
+            continue;
 
           const messages = await thread.messages.fetch({ limit: 100 });
           const ownerMessage = [...messages.values()]
@@ -1368,6 +1374,7 @@ export async function startBot(): Promise<void> {
           }
 
           if (!threadMember.roles.cache.has(config.requiredRoleId)) continue;
+          if (threadMember.roles.cache.has("1481405456722432142")) continue;
           seen.add(thread.ownerId);
 
           // Collect all OP messages with a patrol count, newest first
