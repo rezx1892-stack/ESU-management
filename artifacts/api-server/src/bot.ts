@@ -157,9 +157,14 @@ interface ActiveLOA {
 
 let activeLOAs: ActiveLOA[] = [];
 
+// userId -> nickname; populated by /collectloa scans and /addloalist entries
+const absenceList: Map<string, string> = new Map();
+
 const LOA_ROLE_ID = "1483541152983683102";
 const COMMAND_REQUIRED_ROLE_ID = "1318013406501933077";
 const LOA_FORMAT_THREAD_ID = "1522054494337241308";
+const ABSENCE_MANAGER_ROLE_ID = "1317965217262600242";
+const ABSENCE_TARGET_ROLE_ID = "1481057691400015973";
 
 // Loosely detects whether a message follows the "Absence format"
 // (Username / Squad / Reason for absence) without requiring exact wording.
@@ -348,6 +353,7 @@ export async function startBot(): Promise<void> {
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMembers,
     ],
   });
 
@@ -409,6 +415,20 @@ export async function startBot(): Promise<void> {
       .setName("collectloa")
       .setDescription(
         "Scan the absence-format thread and list everyone who posted in that format",
+      ),
+    new SlashCommandBuilder()
+      .setName("addloalist")
+      .setDescription("Manually add a user to the absence list")
+      .addUserOption((opt) =>
+        opt
+          .setName("user")
+          .setDescription("The user to add to the absence list")
+          .setRequired(true),
+      ),
+    new SlashCommandBuilder()
+      .setName("checkabsence")
+      .setDescription(
+        "List members with the target role who are not on the absence list and not on LOA",
       ),
   ];
 
@@ -742,6 +762,11 @@ export async function startBot(): Promise<void> {
           return;
         }
 
+        // Merge into the persistent absence list used by /checkabsence
+        for (const [userId, nickname] of submitters) {
+          absenceList.set(userId, nickname);
+        }
+
         const entries = [...submitters.entries()];
         const FIELDS_PER_EMBED = 25;
         const embeds: EmbedBuilder[] = [];
@@ -792,6 +817,126 @@ export async function startBot(): Promise<void> {
         logger.error({ err }, "Error handling /collectloa");
         await interaction
           .editReply("❌ An error occurred while scanning the thread.")
+          .catch(() => undefined);
+      }
+    }
+
+    // --- /addloalist Command ---
+    if (interaction.commandName === "addloalist") {
+      if (!interaction.member.roles.cache.has(ABSENCE_MANAGER_ROLE_ID)) {
+        return interaction.reply({
+          content: "❌ You do not have permission to use this command.",
+          ephemeral: true,
+        });
+      }
+
+      const targetUser = interaction.options.getUser("user");
+      if (!targetUser) {
+        return interaction.reply({
+          content: "❌ Missing required option.",
+          ephemeral: true,
+        });
+      }
+
+      let nickname = targetUser.username;
+      try {
+        const member = await interaction.guild?.members.fetch(targetUser.id);
+        if (member) nickname = member.displayName;
+      } catch {
+        // fall back to username
+      }
+
+      absenceList.set(targetUser.id, nickname);
+
+      return interaction.reply({
+        content: `✅ Added **${nickname}** (\`${targetUser.id}\`) to the absence list.`,
+      });
+    }
+
+    // --- /checkabsence Command ---
+    if (interaction.commandName === "checkabsence") {
+      if (!interaction.member.roles.cache.has(ABSENCE_MANAGER_ROLE_ID)) {
+        return interaction.reply({
+          content: "❌ You do not have permission to use this command.",
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply();
+
+      try {
+        if (!interaction.guild) {
+          await interaction.editReply("❌ This command must be run in a server.");
+          return;
+        }
+
+        const allMembers = await interaction.guild.members.fetch();
+        const flagged: { userId: string; nickname: string }[] = [];
+
+        for (const member of allMembers.values()) {
+          if (!member.roles.cache.has(ABSENCE_TARGET_ROLE_ID)) continue;
+          if (member.roles.cache.has(LOA_ROLE_ID)) continue;
+          if (absenceList.has(member.id)) continue;
+
+          flagged.push({ userId: member.id, nickname: member.displayName });
+        }
+
+        if (flagged.length === 0) {
+          await interaction.editReply(
+            "✅ No one is missing — every member with the target role is either on LOA or on the absence list.",
+          );
+          return;
+        }
+
+        const FIELDS_PER_EMBED = 25;
+        const embeds: EmbedBuilder[] = [];
+        const totalPages = Math.ceil(flagged.length / FIELDS_PER_EMBED);
+
+        for (let page = 0; page < totalPages; page++) {
+          const slice = flagged.slice(
+            page * FIELDS_PER_EMBED,
+            (page + 1) * FIELDS_PER_EMBED,
+          );
+
+          const embed = new EmbedBuilder()
+            .setTitle("🚨 Unaccounted Absences")
+            .setColor(0xed4245)
+            .setTimestamp()
+            .setFooter({
+              text:
+                totalPages > 1
+                  ? `Page ${page + 1} of ${totalPages} • ${flagged.length} member(s)`
+                  : `${flagged.length} member(s)`,
+            });
+
+          if (page === 0) {
+            embed.setDescription(
+              "The following members have the target role but are **not on LOA** and **not on the absence list**.",
+            );
+          }
+
+          for (const entry of slice) {
+            embed.addFields({
+              name: entry.nickname,
+              value: `**ID:** ${entry.userId}`,
+              inline: false,
+            });
+          }
+
+          embeds.push(embed);
+        }
+
+        for (let i = 0; i < embeds.length; i++) {
+          if (i === 0) {
+            await interaction.editReply({ embeds: [embeds[i]!] });
+          } else {
+            await interaction.followUp({ embeds: [embeds[i]!] });
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, "Error handling /checkabsence");
+        await interaction
+          .editReply("❌ An error occurred while checking absences.")
           .catch(() => undefined);
       }
     }
