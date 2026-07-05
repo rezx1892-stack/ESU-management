@@ -935,6 +935,49 @@ export async function startBot(): Promise<void> {
             await interaction.followUp({ embeds: [embeds[i]!] });
           }
         }
+
+        // Separate embed with just the raw IDs of everyone flagged, for easy copy-paste
+        const ID_CHUNK_SIZE = 40;
+        const idLines: string[] = [];
+        for (let i = 0; i < flagged.length; i += ID_CHUNK_SIZE) {
+          idLines.push(
+            flagged
+              .slice(i, i + ID_CHUNK_SIZE)
+              .map((e) => e.userId)
+              .join(", "),
+          );
+        }
+
+        const FIELDS_PER_ID_EMBED = 25;
+        const idTotalPages = Math.ceil(idLines.length / FIELDS_PER_ID_EMBED);
+
+        for (let page = 0; page < idTotalPages; page++) {
+          const slice = idLines.slice(
+            page * FIELDS_PER_ID_EMBED,
+            (page + 1) * FIELDS_PER_ID_EMBED,
+          );
+
+          const idEmbed = new EmbedBuilder()
+            .setTitle("🆔 Unaccounted Absence — ID List")
+            .setColor(0xed4245)
+            .setTimestamp()
+            .setFooter({
+              text:
+                idTotalPages > 1
+                  ? `Page ${page + 1} of ${idTotalPages} • ${flagged.length} member(s)`
+                  : `${flagged.length} member(s)`,
+            });
+
+          slice.forEach((line, idx) => {
+            idEmbed.addFields({
+              name: `IDs (${page * FIELDS_PER_ID_EMBED + idx + 1})`,
+              value: line,
+              inline: false,
+            });
+          });
+
+          await interaction.followUp({ embeds: [idEmbed] });
+        }
       } catch (err) {
         logger.error({ err }, "Error handling /checkabsence");
         await interaction
