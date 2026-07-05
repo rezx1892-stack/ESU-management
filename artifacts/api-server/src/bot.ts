@@ -876,6 +876,7 @@ export async function startBot(): Promise<void> {
         for (const member of allMembers.values()) {
           if (!member.roles.cache.has(ABSENCE_TARGET_ROLE_ID)) continue;
           if (member.roles.cache.has(LOA_ROLE_ID)) continue;
+          if (member.roles.cache.has("1481405456722432142")) continue;
           if (absenceList.has(member.id)) continue;
 
           flagged.push({ userId: member.id, nickname: member.displayName });
