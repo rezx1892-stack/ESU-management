@@ -159,6 +159,22 @@ let activeLOAs: ActiveLOA[] = [];
 
 const LOA_ROLE_ID = "1483541152983683102";
 const COMMAND_REQUIRED_ROLE_ID = "1318013406501933077";
+const LOA_FORMAT_THREAD_ID = "1522054494337241308";
+
+// Loosely detects whether a message follows the "Absence format"
+// (Username / Squad / Reason for absence) without requiring exact wording.
+function looksLikeAbsenceFormat(content: string): boolean {
+  if (!content) return false;
+  const lower = content.toLowerCase();
+
+  const hasUsername = /user\s*name/.test(lower);
+  const hasSquad = /squad/.test(lower);
+  const hasReason =
+    /reason/.test(lower) || /absen(t|ce)/.test(lower) || /leave/.test(lower);
+
+  const score = [hasUsername, hasSquad, hasReason].filter(Boolean).length;
+  return score >= 2;
+}
 const GUILD_CONFIGS: Record<string, GuildConfig> = {
   // Original server
   "1317964647680311427": {
@@ -388,6 +404,11 @@ export async function startBot(): Promise<void> {
       .setName("activewarrants")
       .setDescription(
         "Displays a list of all active unserved warrants from the database",
+      ),
+    new SlashCommandBuilder()
+      .setName("collectloa")
+      .setDescription(
+        "Scan the absence-format thread and list everyone who posted in that format",
       ),
   ];
 
@@ -650,6 +671,128 @@ export async function startBot(): Promise<void> {
         return interaction.editReply({
           content: "❌ Error connecting to database.",
         });
+      }
+    }
+
+    // --- /collectloa Command ---
+    if (interaction.commandName === "collectloa") {
+      if (!interaction.member.roles.cache.has(COMMAND_REQUIRED_ROLE_ID)) {
+        return interaction.reply({
+          content: "❌ You do not have permission to use this command.",
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply();
+
+      try {
+        const thread = await client.channels
+          .fetch(LOA_FORMAT_THREAD_ID)
+          .catch(() => null);
+
+        if (!thread || !thread.isThread()) {
+          await interaction.editReply(
+            "❌ Could not find the absence-format thread (invalid ID or the bot lacks access).",
+          );
+          return;
+        }
+
+        const submitters = new Map<string, string>(); // userId -> nickname
+        let lastBefore: string | undefined;
+
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const batch = await thread.messages.fetch({
+            limit: 100,
+            before: lastBefore,
+          });
+          if (batch.size === 0) break;
+
+          const sorted = [...batch.values()].sort(
+            (a, b) => b.createdTimestamp - a.createdTimestamp,
+          );
+
+          for (const msg of sorted) {
+            if (msg.author.bot) continue;
+            if (!looksLikeAbsenceFormat(msg.content)) continue;
+            if (submitters.has(msg.author.id)) continue;
+
+            let nickname = msg.author.username;
+            try {
+              const member =
+                msg.member ??
+                (interaction.guild
+                  ? await interaction.guild.members.fetch(msg.author.id)
+                  : null);
+              if (member) nickname = member.displayName;
+            } catch {
+              // fall back to username
+            }
+            submitters.set(msg.author.id, nickname);
+          }
+
+          const oldest = sorted[sorted.length - 1];
+          if (oldest) lastBefore = oldest.id;
+          if (batch.size < 100) break;
+        }
+
+        if (submitters.size === 0) {
+          await interaction.editReply(
+            "📭 No messages matching the absence format were found in that thread.",
+          );
+          return;
+        }
+
+        const entries = [...submitters.entries()];
+        const FIELDS_PER_EMBED = 25;
+        const embeds: EmbedBuilder[] = [];
+        const totalPages = Math.ceil(entries.length / FIELDS_PER_EMBED);
+
+        for (let page = 0; page < totalPages; page++) {
+          const slice = entries.slice(
+            page * FIELDS_PER_EMBED,
+            (page + 1) * FIELDS_PER_EMBED,
+          );
+
+          const embed = new EmbedBuilder()
+            .setTitle("📋 Absence Format Submissions")
+            .setColor(0x5865f2)
+            .setTimestamp()
+            .setFooter({
+              text:
+                totalPages > 1
+                  ? `Page ${page + 1} of ${totalPages} • ${entries.length} submission(s)`
+                  : `${entries.length} submission(s)`,
+            });
+
+          if (page === 0) {
+            embed.setDescription(
+              `The following members posted a message matching the absence format in <#${LOA_FORMAT_THREAD_ID}>.`,
+            );
+          }
+
+          for (const [userId, nickname] of slice) {
+            embed.addFields({
+              name: nickname,
+              value: `**ID:** ${userId}`,
+              inline: false,
+            });
+          }
+
+          embeds.push(embed);
+        }
+
+        for (let i = 0; i < embeds.length; i++) {
+          if (i === 0) {
+            await interaction.editReply({ embeds: [embeds[i]!] });
+          } else {
+            await interaction.followUp({ embeds: [embeds[i]!] });
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, "Error handling /collectloa");
+        await interaction
+          .editReply("❌ An error occurred while scanning the thread.")
+          .catch(() => undefined);
       }
     }
 
