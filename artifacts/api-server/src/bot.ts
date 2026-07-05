@@ -676,7 +676,7 @@ export async function startBot(): Promise<void> {
 
     // --- /collectloa Command ---
     if (interaction.commandName === "collectloa") {
-      if (!interaction.member.roles.cache.has(COMMAND_REQUIRED_ROLE_ID)) {
+      if (!interaction.member.roles.cache.has("1317965217262600242")) {
         return interaction.reply({
           content: "❌ You do not have permission to use this command.",
           ephemeral: true,
