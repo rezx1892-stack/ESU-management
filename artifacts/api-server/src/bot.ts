@@ -876,7 +876,9 @@ export async function startBot(): Promise<void> {
         for (const member of allMembers.values()) {
           if (!member.roles.cache.has(ABSENCE_TARGET_ROLE_ID)) continue;
           if (member.roles.cache.has(LOA_ROLE_ID)) continue;
-          if (member.roles.cache.has("1481405456722432142")) continue;
+          if (member.roles.cache.has("1510852666236993626")) continue;
+          if (member.roles.cache.has("1510851551973871646")) continue;
+          if (member.roles.cache.has("1481104542299848955")) continue;
           if (member.roles.cache.has("1369883903086825534")) continue;
           if (!member.roles.cache.has("1521375193061134376")) continue;
           if (absenceList.has(member.id)) continue;
@@ -1021,7 +1023,9 @@ export async function startBot(): Promise<void> {
             !member ||
             !member.roles.cache.has(TARGET_ROLE_ID) ||
             member.roles.cache.has(LOA_ROLE_ID) ||
-            member.roles.cache.has("1481405456722432142")
+            member.roles.cache.has("1510852666236993626") ||
+            member.roles.cache.has("1510851551973871646") ||
+            member.roles.cache.has("1481104542299848955")
           )
             continue;
 
@@ -1374,7 +1378,9 @@ export async function startBot(): Promise<void> {
           }
 
           if (!threadMember.roles.cache.has(config.requiredRoleId)) continue;
-          if (threadMember.roles.cache.has("1481405456722432142")) continue;
+          if (threadMember.roles.cache.has("1510852666236993626")) continue;
+          if (threadMember.roles.cache.has("1510851551973871646")) continue;
+          if (threadMember.roles.cache.has("1481104542299848955")) continue;
           seen.add(thread.ownerId);
 
           // Collect all OP messages with a patrol count, newest first
