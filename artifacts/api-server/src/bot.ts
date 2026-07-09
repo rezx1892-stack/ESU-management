@@ -1352,7 +1352,9 @@ export async function startBot(): Promise<void> {
         function parsePatrolCount(content: string): number | null {
           const lines = content.split("\n");
           for (const line of lines) {
-            const match = line.match(/patrol\s*logs?\s*:\s*(\d+)(?!\s*\/)/i);
+            // Must match "Patrol Logs: <number>" — requires whitespace + "logs" (plural)
+            // so it never hits "Patrols: X/Y" in the quota section.
+            const match = line.match(/patrol\s+logs\s*:\s*(\d+)/i);
             if (match?.[1]) return parseInt(match[1], 10);
           }
           return null;
