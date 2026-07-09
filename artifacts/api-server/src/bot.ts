@@ -1346,7 +1346,7 @@ export async function startBot(): Promise<void> {
           ...archived.threads.values(),
         ];
 
-        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
         // Parse "Patrol Log: N" or "Patrol Logs: N" (plain count, not X/Y ratio)
         function parsePatrolCount(content: string): number | null {
@@ -1421,12 +1421,16 @@ export async function startBot(): Promise<void> {
           // Sort by timestamp descending (newest first)
           countedMessages.sort((a, b) => b.ts - a.ts);
 
-          const latestCount = countedMessages[0]!.count;
+          const latestEntry = countedMessages[0]!;
+          const latestCount = latestEntry.count;
 
-          // Find the most recent message that is older than 7 days
-          const baseline = countedMessages.find((m) => m.ts < sevenDaysAgo);
+          // Find the most recent message that is at least 7 days before the LATEST patrol,
+          // not 7 days before today — ensures the two compared entries are truly 7+ days apart.
+          const baseline = countedMessages.find(
+            (m) => m.ts <= latestEntry.ts - SEVEN_DAYS_MS,
+          );
 
-          // No baseline means all messages are within 7 days — skip (too new to judge)
+          // No baseline means there's no patrol old enough to compare against — skip
           if (!baseline) continue;
 
           // Inactive if count hasn't gone up since the 7-day baseline
