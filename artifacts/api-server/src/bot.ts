@@ -1069,6 +1069,7 @@ export async function startBot(): Promise<void> {
             name: member.displayName,
             quotaLines,
             failed: anyFailed,
+            threadUrl: thread.url,
           });
 
           processedMembers.add(thread.ownerId);
@@ -1093,7 +1094,7 @@ export async function startBot(): Promise<void> {
           for (const member of chunk) {
             embed.addFields({
               name: member.name,
-              value: member.quotaLines.join("\n"),
+              value: member.quotaLines.join("\n") + `\n[📂 Patrol file](${member.threadUrl})`,
               inline: false,
             });
           }
@@ -1362,6 +1363,8 @@ export async function startBot(): Promise<void> {
           nickname: string;
           latestCount: number;
           baselineCount: number;
+          latestLink: string;
+          baselineLink: string;
         }
 
         const inactive: InactiveEntry[] = [];
@@ -1402,7 +1405,7 @@ export async function startBot(): Promise<void> {
               if (msg.author.id !== thread.ownerId) continue;
               const count = parsePatrolCount(msg.content);
               if (count !== null) {
-                countedMessages.push({ ts: msg.createdTimestamp, count });
+                countedMessages.push({ ts: msg.createdTimestamp, count, msgId: msg.id });
               }
             }
 
@@ -1426,11 +1429,17 @@ export async function startBot(): Promise<void> {
 
           // Inactive if count hasn't gone up since the 7-day baseline
           if (latestCount <= baseline.count) {
+            const guildId = guild.id;
+            const threadId = thread.id;
+            const latestLink = `https://discord.com/channels/${guildId}/${threadId}/${countedMessages[0]!.msgId}`;
+            const baselineLink = `https://discord.com/channels/${guildId}/${threadId}/${baseline.msgId}`;
             inactive.push({
               userId: thread.ownerId,
               nickname: threadMember.displayName,
               latestCount,
               baselineCount: baseline.count,
+              latestLink,
+              baselineLink,
             });
           }
         }
@@ -1478,8 +1487,8 @@ export async function startBot(): Promise<void> {
               name: `🔴 ${entry.nickname}`,
               value:
                 `**ID:** ${entry.userId}\n` +
-                `**Patrol count (7+ days ago):** ${entry.baselineCount}\n` +
-                `**Patrol count (now):** ${entry.latestCount}\n` +
+                `**Patrol count (7+ days ago):** ${entry.baselineCount} — [view message](${entry.baselineLink})\n` +
+                `**Patrol count (now):** ${entry.latestCount} — [view message](${entry.latestLink})\n` +
                 `─────────────────────`,
               inline: false,
             });
