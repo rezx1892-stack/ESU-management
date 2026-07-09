@@ -1433,8 +1433,8 @@ export async function startBot(): Promise<void> {
           // No baseline means there's no patrol old enough to compare against — skip
           if (!baseline) continue;
 
-          // Inactive if count hasn't gone up since the 7-day baseline
-          if (latestCount <= baseline.count) {
+          // Inactive only if count hasn't changed — a decrease means they rejoined ESU, skip.
+          if (latestCount === baseline.count) {
             const guildId = guild.id;
             const threadId = thread.id;
             const latestLink = `https://discord.com/channels/${guildId}/${threadId}/${countedMessages[0]!.msgId}`;
