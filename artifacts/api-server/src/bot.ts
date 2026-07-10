@@ -11,133 +11,7 @@ import {
   MessageFlags, // <--- Make sure this is inside the block!
 } from "discord.js";
 
-// Add your other imports below...
-import { google } from "googleapis";
 import { logger } from "./lib/logger.js";
-
-// —— Google Sheets helpers
-
-const SPREADSHEET_ID = "1M6_fe_OLvjk4OEdRBmz7rsNHAULHCgEDAA49MJM7IGM";
-
-function getSheetsClient() {
-  const raw = process.env["GOOGLE_SERVICE_ACCOUNT_JSON"];
-  if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON not set");
-  const creds = JSON.parse(raw) as {
-    client_email: string;
-    private_key: string;
-  };
-  const auth = new google.auth.GoogleAuth({
-    credentials: creds,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-  return google.sheets({ version: "v4", auth });
-}
-
-async function serveWarrantInSheet(
-  suspectName: string,
-): Promise<"served" | "not_found" | "already_served"> {
-  const sheets = getSheetsClient();
-
-  // 1. Fetch the entire data grid from the sheet
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "A1:Z1000",
-  });
-
-  const rows = res.data.values ?? [];
-  if (rows.length === 0) return "not_found";
-
-  let foundRowIndex = -1;
-  let foundColIndex = -1;
-
-  // 2. Scan every single cell in the sheet to find the suspect's name
-  for (let r = 0; r < rows.length; r++) {
-    for (let c = 0; c < rows[r].length; c++) {
-      if (
-        rows[r][c] &&
-        rows[r][c].toString().trim().toLowerCase() ===
-          suspectName.trim().toLowerCase()
-      ) {
-        foundRowIndex = r;
-        foundColIndex = c;
-        break;
-      }
-    }
-    if (foundRowIndex !== -1) break;
-  }
-
-  // If the suspect name wasn't found anywhere in the sheet
-  if (foundRowIndex === -1) return "not_found";
-
-  // 3. The "Warrant Status" column is exactly 2 columns to the right of the Suspect name
-  const statusColIndex = foundColIndex + 2;
-  const currentStatus = rows[foundRowIndex][statusColIndex]
-    ? rows[foundRowIndex][statusColIndex].toString().trim().toLowerCase()
-    : "";
-
-  if (currentStatus === "served") {
-    return "already_served";
-  }
-
-  // 4. Convert the numerical column index back into a Google Sheets letter (e.g., Column B -> 'B')
-  function colToLetter(col: number): string {
-    let letter = "";
-    let c = col;
-    while (c >= 0) {
-      letter = String.fromCharCode((c % 26) + 65) + letter;
-      c = Math.floor(c / 26) - 1;
-    }
-    return letter;
-  }
-
-  const targetCell = `${colToLetter(statusColIndex)}${foundRowIndex + 1}`; // +1 because sheets are 1-indexed
-
-  // 5. Update that specific cell to "Served"
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: targetCell,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [["Served"]],
-    },
-  });
-
-  // 6. Fetch spreadsheet metadata to get the proper sheet ID
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  const sheetId = meta.data.sheets?.[0]?.properties?.sheetId ?? 0;
-
-  // 7. Paint the cell bright red with white bold text
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SPREADSHEET_ID,
-    requestBody: {
-      requests: [
-        {
-          repeatCell: {
-            range: {
-              sheetId,
-              startRowIndex: foundRowIndex,
-              endRowIndex: foundRowIndex + 1,
-              startColumnIndex: statusColIndex,
-              endColumnIndex: statusColIndex + 1,
-            },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: { red: 1, green: 0, blue: 0 },
-                textFormat: {
-                  bold: true,
-                  foregroundColor: { red: 1, green: 1, blue: 1 },
-                },
-              },
-            },
-            fields: "userEnteredFormat(backgroundColor,textFormat)",
-          },
-        },
-      ],
-    },
-  });
-
-  return "served";
-}
 
 interface GuildConfig {
   patrolLogsChannelId: string;
@@ -147,7 +21,6 @@ interface GuildConfig {
   rankLockChannelId: string;
   rankLockRoleId: string;
   inactivityCheckRoles: Set<string>;
-  warrantLogChannelId?: string;
 }
 interface ActiveLOA {
   userId: string;
@@ -197,7 +70,6 @@ const GUILD_CONFIGS: Record<string, GuildConfig> = {
       "1317965217262600242",
       "1318006222867267634",
     ]),
-    warrantLogChannelId: "1509013045534523542",
   },
   // Testing server
   "1038126794408198174": {
@@ -407,11 +279,6 @@ export async function startBot(): Promise<void> {
           .setRequired(true),
       ),
     new SlashCommandBuilder()
-      .setName("activewarrants")
-      .setDescription(
-        "Displays a list of all active unserved warrants from the database",
-      ),
-    new SlashCommandBuilder()
       .setName("collectloa")
       .setDescription(
         "Scan the absence-format thread and list everyone who posted in that format",
@@ -615,85 +482,6 @@ export async function startBot(): Promise<void> {
         content: `🛑 **Force Removed LOA:** <@${targetUser.id}>'s LOA status has been terminated and their role has been removed.`,
       });
     }
-    // --- /activewarrants Command ---
-    if (interaction.commandName === "activewarrants") {
-      const ALLOWED_ROLE_IDS = [
-        "1481057746416828639",
-        "1481104542299848955",
-        "1481405456722432142",
-        "1481057983621501059",
-        "1318006222867267634",
-        "1317965217262600242",
-      ];
-
-      const memberRoles = (interaction.member as any).roles.cache;
-
-      // DEBUG: This prints the truth to your terminal
-      console.log(
-        "DEBUG: Your User Role IDs:",
-        memberRoles.map((r: any) => r.id),
-      );
-
-      const hasPermission = memberRoles.some((role: any) =>
-        ALLOWED_ROLE_IDS.includes(role.id),
-      );
-
-      if (!interaction.member || !hasPermission) {
-        return interaction.reply({
-          content: "❌ No permission.",
-          flags: [4],
-        });
-      }
-
-      await interaction.deferReply({ ephemeral: false });
-
-      try {
-        const sheets = getSheetsClient();
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId: SPREADSHEET_ID,
-          range: "Warrants!A1:K100",
-        });
-
-        const rows = response.data.values;
-        if (!rows || rows.length === 0) {
-          return interaction.editReply({
-            content: "ℹ️ No data found in the spreadsheet.",
-          });
-        }
-
-        let results: string[] = [];
-        for (let i = 17; i < rows.length; i++) {
-          const row = rows[i];
-          const name = row[1];
-          const status = row[3];
-
-          if (
-            name &&
-            status &&
-            String(status).trim().toLowerCase() === "active"
-          ) {
-            const cleanName = String(name).trim();
-            const profileLink = `https://www.roblox.com/users/profile?username=${encodeURIComponent(cleanName)}`;
-            results.push(`[${cleanName}](${profileLink})`);
-          }
-        }
-
-        if (results.length === 0) {
-          return interaction.editReply({
-            content: "ℹ️ No active warrants found.",
-          });
-        }
-
-        const message = `📜 **Active Warrants:**\n${results.map((entry, i) => `**${i + 1}.** ${entry}`).join("\n")}`;
-        return interaction.editReply({ content: message });
-      } catch (err) {
-        console.error("Bot failed:", err);
-        return interaction.editReply({
-          content: "❌ Error connecting to database.",
-        });
-      }
-    }
-
     // --- /collectloa Command ---
     if (interaction.commandName === "collectloa") {
       if (!interaction.member.roles.cache.has("1317965217262600242")) {
@@ -1528,66 +1316,6 @@ export async function startBot(): Promise<void> {
     }
   });
 
-  // ─── Warrant log listener ──────────────────────────────────────────────────
-
-  client.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
-    if (!message.guildId) return;
-
-    const config = GUILD_CONFIGS[message.guildId];
-    if (!config?.warrantLogChannelId) return;
-    if (message.channelId !== config.warrantLogChannelId) return;
-
-    const content = message.content;
-
-    // Only act when "Warrant Served: Yes" is present
-    const servedMatch = content.match(/warrant\s+served\s*:\s*yes/i);
-    if (!servedMatch) return;
-
-    // Parse suspect name
-    const suspectMatch = content.match(/^suspect\s*:\s*(.+)$/im);
-    if (!suspectMatch?.[1]) {
-      await message
-        .reply("⚠️ Could not parse the **Suspect** field from this message.")
-        .catch(() => undefined);
-      return;
-    }
-
-    const suspectName = suspectMatch[1].trim();
-
-    try {
-      const result = await serveWarrantInSheet(suspectName);
-
-      if (result === "served") {
-        await message
-          .reply(
-            `✅ Warrant for **${suspectName}** has been marked as **Served** in the spreadsheet (cell highlighted red).`,
-          )
-          .catch(() => undefined);
-        logger.info({ suspectName }, "Warrant marked as served in sheet");
-      } else if (result === "already_served") {
-        await message
-          .reply(
-            `ℹ️ Warrant for **${suspectName}** is already marked as Served in the spreadsheet.`,
-          )
-          .catch(() => undefined);
-      } else {
-        await message
-          .reply(
-            `⚠️ Could not find **${suspectName}** in the warrants spreadsheet. Please check the spelling matches exactly.`,
-          )
-          .catch(() => undefined);
-        logger.warn({ suspectName }, "Suspect not found in sheet");
-      }
-    } catch (err) {
-      logger.error({ err, suspectName }, "Error updating warrant in sheet");
-      await message
-        .reply(
-          "❌ An error occurred while updating the spreadsheet. Please check the bot logs.",
-        )
-        .catch(() => undefined);
-    }
-  });
 
   logger.info({ tokenLength: token.length }, "Attempting Discord login");
 
